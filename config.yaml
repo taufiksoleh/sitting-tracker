@@ -1,0 +1,31 @@
+# Konfigurasi Sitting Tracker
+
+# Sumber video: path file (development) atau URL RTSP CCTV (produksi)
+# contoh: "sample.mp4" atau "rtsp://user:pass@192.168.1.10:554/stream1"
+source: "sample.mp4"
+
+# Model YOLO dan perangkat: cpu | cuda:0 | mps
+model: yolo11n.pt
+device: cpu
+person_conf: 0.4
+imgsz: 640
+
+# File zona hasil zone_tool.py
+zones_file: zones.json
+
+dwell:
+  min_sit_seconds: 3.0      # lama di zona sebelum dianggap duduk
+  leave_grace_seconds: 2.0  # toleransi hilang/keluar zona sebelum sesi ditutup
+  anchor: bottom_center     # titik bbox yang diuji terhadap zona
+
+face:
+  enabled: true
+  every_n_frames: 5         # Re-ID hanya tiap N frame
+  match_threshold: 0.45     # cosine similarity minimal untuk dianggap orang yang sama
+  min_face_px: 40           # ukuran wajah minimal (piksel)
+  model_name: buffalo_s
+
+output:
+  show_window: true
+  save_video: false         # tulis out.mp4
+  log_csv: sessions.csv

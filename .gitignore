@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+.venv/
+sessions.csv
+out.mp4
+*.pt
