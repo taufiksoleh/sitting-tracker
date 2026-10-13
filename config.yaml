@@ -5,18 +5,23 @@
 source: "sample.mp4"
 
 # Model YOLO dan perangkat: cpu | cuda:0 | mps
-model: yolo11n.pt
-device: cpu
-person_conf: 0.4
-imgsz: 640
+# CCTV ramai butuh model >= yolo11s dan imgsz besar; yolo11n@640 melewatkan sebagian besar
+# pengunjung (terutama yang membelakangi kamera / tertutup sebagian).
+model: yolo11s.pt
+device: mps
+person_conf: 0.1         # rendah agar tracker bisa menyambung orang terhalang; ambang ID baru di tracker.yaml
+tracker: tracker.yaml
+imgsz: 1088
 
 # File zona hasil zone_tool.py
 zones_file: zones.json
 
 dwell:
-  min_sit_seconds: 3.0      # lama di zona sebelum dianggap duduk
-  leave_grace_seconds: 2.0  # toleransi hilang/keluar zona sebelum sesi ditutup
-  anchor: bottom_center     # titik bbox yang diuji terhadap zona
+  min_sit_seconds: 1.0      # lama di zona sebelum dianggap duduk
+  leave_grace_seconds: 5.0  # toleransi hilang/keluar zona sebelum sesi ditutup
+  anchor: overlap           # overlap | bottom_center | center
+  min_overlap: 0.15         # (anchor=overlap) porsi bbox minimal yang tertutup zona
+  reattach_dist: 0.75       # ID baru di posisi <= 0.75x tinggi bbox dari track yang baru hilang mewarisi timernya
 
 face:
   enabled: true
@@ -27,5 +32,7 @@ face:
 
 output:
   show_window: true
-  save_video: false         # tulis out.mp4
+  save_video: true         # tulis out.mp4
+  draw_zones: false         # garis zona disembunyikan agar video tetap natural
+  draw_boxes: true          # kotak tipis di sekitar pengunjung yang sedang di zona
   log_csv: sessions.csv

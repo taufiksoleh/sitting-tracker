@@ -116,3 +116,37 @@ def test_flush_closes_open_sessions():
     done = d.flush(6)
     assert {s.track_id for s in done} == {1, 2}
     assert d.flush(7) == []
+
+
+def test_id_switch_same_spot_keeps_timer():
+    d = make()
+    pos = {1: (100.0, 100.0, 80.0)}
+    for t, obs in frames(0, 5, {1: "table_1"}):
+        d.update(t, obs, pos)
+    d.set_customer(1, "C001")
+    # tracker memberi ID baru (2) untuk orang yang sama di posisi hampir sama
+    for t, obs in frames(5.5, 10, {2: "table_1"}):
+        assert d.update(t, obs, {2: (105.0, 98.0, 82.0)}) == []
+    assert d.elapsed(2, 10) == pytest.approx(10)
+    assert d.is_sitting(2) and d.zone(1) is None
+    done = d.flush(10)
+    assert len(done) == 1
+    assert (done[0].track_id, done[0].customer_id, done[0].start_s) == (2, "C001", 0)
+
+
+def test_new_id_far_away_starts_new_session():
+    d = make()
+    for t, obs in frames(0, 5, {1: "table_1"}):
+        d.update(t, obs, {1: (100.0, 100.0, 80.0)})
+    for t, obs in frames(5.5, 6, {2: "table_1"}):
+        d.update(t, obs, {2: (300.0, 100.0, 80.0)})
+    assert d.elapsed(2, 6) == pytest.approx(0.5)
+
+
+def test_no_reattach_while_old_track_still_visible():
+    d = make()
+    for t, obs in frames(0, 5, {1: "table_1"}):
+        d.update(t, obs, {1: (100.0, 100.0, 80.0)})
+    d.update(5.5, {1: "table_1", 2: "table_1"}, {1: (100.0, 100.0, 80.0), 2: (110.0, 100.0, 80.0)})
+    assert d.elapsed(1, 5.5) == pytest.approx(5.5)
+    assert d.elapsed(2, 5.5) == 0

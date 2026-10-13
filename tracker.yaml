@@ -1,0 +1,9 @@
+# ByteTrack untuk CCTV ramai: pakai deteksi berkonfidensi rendah untuk mempertahankan
+# track yang terhalang, track baru hanya dari deteksi yakin, buffer panjang.
+tracker_type: bytetrack
+track_high_thresh: 0.25   # deteksi untuk asosiasi tahap 1
+track_low_thresh: 0.1     # deteksi lemah tetap dipakai menyambung track (tahap 2)
+new_track_thresh: 0.35    # ambang membuat track (ID) baru
+track_buffer: 90          # frame sebelum track yang hilang dihapus
+match_thresh: 0.9
+fuse_score: True

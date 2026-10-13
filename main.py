@@ -23,11 +23,52 @@ def load_zones(path):
     return [(z["name"], np.array(z["polygon"], np.int32)) for z in zones]
 
 
-def zone_of(point, zones):
+def zone_masks(zones, shape):
+    masks = []
+    for name, poly in zones:
+        m = np.zeros(shape[:2], np.uint8)
+        cv2.fillPoly(m, [poly], 1)
+        masks.append((name, m))
+    return masks
+
+
+def zone_of(box, zones, masks, anchor, min_overlap, prefer=None):
+    """Zona untuk satu bbox. anchor: bottom_center | center | overlap.
+
+    overlap: zona dengan porsi bbox tertutup zona terbesar (>= min_overlap). Cocok untuk
+    orang yang duduk di samping meja atau membelakangi kamera, di mana satu titik
+    bbox sering jatuh di luar polygon meja. prefer (zona saat ini) dipertahankan selama
+    overlap-nya masih >= min_overlap, agar orang di antara dua meja tidak berpindah-pindah.
+    """
+    x1, y1, x2, y2 = box
+    if anchor == "overlap":
+        h, w = masks[0][1].shape if masks else (0, 0)
+        xa, ya = max(0, int(x1)), max(0, int(y1))
+        xb, yb = min(w, int(x2)), min(h, int(y2))
+        area = max(1, (xb - xa) * (yb - ya))
+        best, best_frac = None, min_overlap
+        for name, m in masks:
+            frac = m[ya:yb, xa:xb].sum() / area
+            if name == prefer and frac >= min_overlap:
+                return name
+            if frac >= best_frac:
+                best, best_frac = name, frac
+        return best
+    point = (float((x1 + x2) / 2), float((y1 + y2) / 2 if anchor == "center" else y2))
     for name, poly in zones:
         if cv2.pointPolygonTest(poly, point, False) >= 0:
             return name
     return None
+
+
+def draw_label(frame, text, x, y, color):
+    """Label dengan latar terisi di atas kepala, tetap terbaca di video apa pun."""
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
+    (tw, th), base = cv2.getTextSize(text, font, scale, thick)
+    x = max(0, x)
+    y = max(th + base + 4, y)
+    cv2.rectangle(frame, (x, y - th - base - 4), (x + tw + 6, y), color, -1)
+    cv2.putText(frame, text, (x + 3, y - base - 2), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
 
 def fmt_mmss(seconds):
@@ -66,7 +107,8 @@ def main():
                         face_cfg["min_face_px"], cfg["device"])
 
     dcfg = cfg["dwell"]
-    dwell = DwellTracker(dcfg["min_sit_seconds"], dcfg["leave_grace_seconds"])
+    dwell = DwellTracker(dcfg["min_sit_seconds"], dcfg["leave_grace_seconds"],
+                         dcfg.get("reattach_dist", 0.5))
 
     wall_start = datetime.now()
 
@@ -91,8 +133,12 @@ def main():
         if csv_file:
             csv_file.flush()
 
+    anchor = dcfg.get("anchor", "bottom_center")
+    min_overlap = dcfg.get("min_overlap", 0.15)
+    masks = None
+
     video_writer = None
-    track_customer = {}
+    last_box = {}  # tid -> bbox terakhir, agar label tidak berkedip saat deteksi putus sesaat
     frame_idx = 0
     t0 = time.monotonic()
     t = 0.0
@@ -103,7 +149,7 @@ def main():
                 break
             t = (time.monotonic() - t0) if is_stream else frame_idx / fps
 
-            res = model.track(frame, persist=True, classes=[0], tracker="bytetrack.yaml",
+            res = model.track(frame, persist=True, classes=[0], tracker=cfg.get("tracker", "bytetrack.yaml"),
                               conf=cfg["person_conf"], imgsz=cfg["imgsz"],
                               device=cfg["device"], verbose=False)[0]
 
@@ -113,34 +159,46 @@ def main():
                 xyxy = res.boxes.xyxy.cpu().numpy()
                 people = list(zip(ids, xyxy))
 
-            observations = {}
-            for tid, (x1, y1, x2, y2) in people:
-                anchor = (float((x1 + x2) / 2), float(y2))
-                observations[tid] = zone_of(anchor, zones)
+            if masks is None:
+                masks = zone_masks(zones, frame.shape)
 
-                if (reid and tid not in track_customer
+            observations, positions = {}, {}
+            for tid, (x1, y1, x2, y2) in people:
+                observations[tid] = zone_of((x1, y1, x2, y2), zones, masks, anchor, min_overlap,
+                                            prefer=dwell.zone(tid))
+                positions[tid] = (float((x1 + x2) / 2), float((y1 + y2) / 2), float(y2 - y1))
+                last_box[tid] = (x1, y1, x2, y2)
+
+                if (reid and dwell.get_customer(tid) is None
                         and frame_idx % face_cfg["every_n_frames"] == 0):
                     cid = reid.identify(frame, (x1, y1, x2, y2))
                     if cid:
-                        track_customer[tid] = cid
                         dwell.set_customer(tid, cid)
 
-            log_sessions(dwell.update(t, observations))
+            log_sessions(dwell.update(t, observations, positions))
 
             if out_cfg["show_window"] or out_cfg["save_video"]:
-                for name, poly in zones:
-                    cv2.polylines(frame, [poly], True, (0, 255, 0), 2)
-                    cv2.putText(frame, name, tuple(int(v) for v in poly[0]),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                for tid, (x1, y1, x2, y2) in people:
-                    sitting = dwell.is_sitting(tid)
-                    color = (0, 0, 255) if sitting else (0, 200, 0)
-                    label = f"T{tid} {track_customer.get(tid, '')}".strip()
-                    if sitting:
-                        label += f" duduk {fmt_mmss(dwell.current_duration(tid, t))}"
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-                    cv2.putText(frame, label, (int(x1), max(15, int(y1) - 6)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                if out_cfg.get("draw_zones", False):
+                    for name, poly in zones:
+                        cv2.polylines(frame, [poly], True, (0, 255, 0), 2)
+                        cv2.putText(frame, name, tuple(int(v) for v in poly[0]),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                # Semua track yang sedang di zona (termasuk yang hilang sesaat dalam masa grace)
+                # diberi timer sejak masuk zona, tanpa menunggu konfirmasi duduk.
+                for tid in list(last_box):
+                    elapsed = dwell.elapsed(tid, t)
+                    if elapsed is None:
+                        if tid not in observations:
+                            del last_box[tid]
+                        continue
+                    x1, y1, x2, y2 = (int(v) for v in last_box[tid])
+                    color = (0, 0, 220) if dwell.is_sitting(tid) else (0, 160, 0)
+                    if out_cfg.get("draw_boxes", True):
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+                    label = fmt_mmss(elapsed)
+                    if dwell.get_customer(tid):
+                        label = f"{dwell.get_customer(tid)} {label}"
+                    draw_label(frame, label, x1, y1 - 2, color)
 
                 if out_cfg["save_video"]:
                     if video_writer is None:
